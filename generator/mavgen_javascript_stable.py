@@ -248,8 +248,10 @@ def mavfmt(field):
         }
 
     if field.array_length:
-        if field.type in ['char', 'int8_t', 'uint8_t']:
+        if field.type in ['char']:
             return str(field.array_length)+'s'
+        if field.type in ['int8_t', 'uint8_t']:
+            return str(field.array_length)+'A'
         return str(field.array_length)+map[field.type]
     return map[field.type]
 
