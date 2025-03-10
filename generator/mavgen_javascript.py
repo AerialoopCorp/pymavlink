@@ -39,6 +39,7 @@ jspack = require("jspack").jspack,
     events = require("events"), // for .emit(..), MAVLink20Processor inherits from events.EventEmitter
     util = require("util");
 
+var Buffer = require('buffer').Buffer; // required in react - no impact in node
 var Long = require('long');
 
 // Add a convenience method to Buffer
@@ -52,7 +53,7 @@ ${MAVHEAD} = function(){};
 ${MAVHEAD}.x25Crc = function(buffer, crcIN) {
 
     var bytes = buffer;
-    var crcOUT = crcIN || 0xffff;
+    var crcOUT = crcIN ===  undefined ? 0xffff : crcIN;
     _.each(bytes, function(e) {
         var tmp = e ^ (crcOUT & 0xff);
         tmp = (tmp ^ (tmp << 4)) & 0xff;
@@ -133,7 +134,7 @@ ${MAVHEAD}.message.prototype.set = function(args,verbose) {
 // inspect
     _.each(this.fieldnames, function(e, i) {
         var num = parseInt(i,10);
-        if (this.hasOwnProperty(e) && isNaN(num)  ){ // asking for an attribure thats non-numeric is ok unless its already an attribute we have
+        if (this.hasOwnProperty(e) && isNaN(num)  ){ // asking for an attribute that's non-numeric is ok unless its already an attribute we have
             if ( verbose >= 1) { console.log("WARNING, overwriting an existing property is DANGEROUS:"+e+" ==>"+i+"==>"+args[i]+" -> "+JSON.stringify(this)); }
         }
     }, this);
@@ -257,7 +258,8 @@ def generate_classes(outf, msgs, xml):
     def field_descriptions(fields):
         ret = ""
         for f in fields:
-            ret += "                %-18s        : %s (%s)\n" % (f.name, f.description.strip(), f.type)
+            if not f.omit_arg:
+                ret += "                %-18s        : %s (%s)\n" % (f.name, f.description.strip(), f.type)
         return ret
 
     # now do all the messages
@@ -265,10 +267,13 @@ def generate_classes(outf, msgs, xml):
 
         # assemble some strings we'll use later in outputting ..
         comment = "%s\n\n%s" % (wrapper.fill(m.description.strip()), field_descriptions(m.fields))
-        selffieldnames = 'self, '
+        argfieldnames = []
+        conststr = ""
         for f in m.fields:
-            selffieldnames += '%s, ' % f.name
-        selffieldnames = selffieldnames[:-2]
+            if not f.omit_arg:
+                argfieldnames.append(f.name)
+            else:
+                conststr = conststr + "    this.%s = %s;\n" % (f.name, f.const_value)
 
         # instance field support copied from mavgen_python
         if m.instance_field is not None:
@@ -289,11 +294,11 @@ def generate_classes(outf, msgs, xml):
         outf.write("    %s.messages.%s = function(" % ( get_mavhead(xml), m.name.lower() ) )
         outf.write(" ...moreargs ) {\n")
         # passing the dynamic args into the correct attributes, we can call the constructor with or without the 'moreargs'
-        outf.write("     [ this.%s ] = moreargs;\n" % " , this.".join(m.fieldnames))
+        outf.write("    [ this.%s ] = moreargs;\n" % " , this.".join(argfieldnames))
+        outf.write(conststr)
 
         # body: set message type properties    
         outf.write("""
-
     this._format = '%s';
     this._id = %s.MAVLINK_MSG_ID_%s;
     this.order_map = %s;
@@ -465,7 +470,7 @@ ${MAVPROCESSOR}.prototype.bytes_needed = function() {
 // add data to the local buffer
 ${MAVPROCESSOR}.prototype.pushBuffer = function(data) {
     if(data) {
-        this.buf = Buffer.concat([this.buf, data]);   // python calls ths self.buf.extend(c) 
+        this.buf = Buffer.concat([this.buf, data]);   // python calls this self.buf.extend(c) 
         this.total_bytes_received += data.length;
     }
 }
@@ -693,7 +698,7 @@ ${MAVPROCESSOR}.prototype.check_signature = function(msgbuf, srcSystem, srcCompo
         //sig1 = str(h.digest())[:6] 
         //sig2 = str(msgbuf)[-6:] 
 
-        // cant just compare sigs, need a full buffer compare like this... 
+        // can't just compare sigs, need a full buffer compare like this... 
         //if (sig1 != sigpart){  
         if (Buffer.compare(sig1,sigpart)){  
             //console.log('sig mismatch',sig1,sigpart)  
@@ -791,12 +796,12 @@ unpacked = jspack.Unpack('cBBBBB', msgbuf.slice(0, 6));
  
     if ((mlen == actual_len) && (signature_len > 0)){ 
         var len_if_signed = mlen+signature_len; 
-        //console.log("Packet appears signed && labled as signed, OK. msgId=" + msgId);     
+        //console.log("Packet appears signed && labeled as signed, OK. msgId=" + msgId);     
  
     } else  if ((mlen == actual_len_nosign) && (signature_len > 0)){ 
  
         var len_if_signed = mlen+signature_len; 
-        throw new Error("Packet appears unsigned when labled as signed. Got actual_len "+actual_len_nosign+" expected " + len_if_signed + ", msgId=" + msgId);     
+        throw new Error("Packet appears unsigned when labeled as signed. Got actual_len "+actual_len_nosign+" expected " + len_if_signed + ", msgId=" + msgId);     
  
     } else if( mlen != actual_len) {  
           throw new Error("Invalid MAVLink message length.  Got " + (msgbuf.length - (${MAVHEAD}.HEADER_LEN + 2)) + " expected " + mlen + ", msgId=" + msgId); 
@@ -841,7 +846,7 @@ unpacked = jspack.Unpack('cBBBBB', msgbuf.slice(0, 6));
     var messageChecksum2 = ${MAVHEAD}.x25Crc([decoder.crc_extra], messageChecksum); 
  
     if ( receivedChecksum != messageChecksum2 ) { 
-        throw new Error('invalid MAVLink CRC in msgID ' +msgId+ ', got 0x' + receivedChecksum + ' checksum, calculated payload checkum as 0x'+messageChecksum2 ); 
+        throw new Error('invalid MAVLink CRC in msgID ' +msgId+ ', got ' + receivedChecksum + ' checksum, calculated payload checksum as '+messageChecksum2 );
     }
  
     // now check the signature... 
@@ -850,7 +855,7 @@ unpacked = jspack.Unpack('cBBBBB', msgbuf.slice(0, 6));
         this.signing.sig_count += 1  
     } 
 
-    // it's a Buffer, zero-length means unsed 
+    // it's a Buffer, zero-length means unused 
     if (this.signing.secret_key.length != 0 ){ 
         var accept_signature = false; 
         if (signature_len == ${MAVHEAD}.MAVLINK_SIGNATURE_BLOCK_LEN){  
@@ -927,7 +932,7 @@ unpacked = jspack.Unpack('cBBBBB', msgbuf.slice(0, 6));
             var currentType =  decoder.format[typeIndex];
 
             if (isNaN(parseInt(currentType))) {
-                // This field is not an array cehck the type and add it to the args
+                // This field is not an array check the type and add it to the args
                 tempArgs[orderIndex] = t[memberIndex];
                 memberIndex++;
             } else {
@@ -988,8 +993,10 @@ unpacked = jspack.Unpack('cBBBBB', msgbuf.slice(0, 6));
 def generate_footer(outf, xml):
     t.write(outf, """
 
-// Expose this code as a module
-module.exports = {${MAVHEAD}, ${MAVPROCESSOR}};
+// allow loading as both common.js (Node), and/or vanilla javascript in-browser
+if(typeof module === "object" && module.exports) {
+    module.exports = {${MAVHEAD}, ${MAVPROCESSOR}};
+}
 
 """, {'MAVHEAD': get_mavhead(xml), 'MAVPROCESSOR': get_mavprocessor(xml)})
 
@@ -1069,7 +1076,7 @@ def generate_tests_mavlink_class(outf, msgs, xml):
             tdata = m.test_data[idx] # test data
             #tdatatype = m.test_data_types[idx] # type of test data 
             fieldtype = m.ordered_fieldtypes[idx] # type of base field
-            # wrap things non-number-like as strings, isnumeric() cant handle negatives, but conveniently none of the test suite uses negatives
+            # wrap things non-number-like as strings, isnumeric() can't handle negatives, but conveniently none of the test suite uses negatives
 
             #print('testdata:'+tdata);
             #print('tdatatype:'+tdatatype);
@@ -1090,7 +1097,7 @@ def generate_tests_mavlink_class(outf, msgs, xml):
             # array of uint8_t ( like char )
             elif _isarray and  ( (fieldtype == 'uint8_t') or (fieldtype == 'int8_t')  ):
                 tdata = 'new Buffer.from('+m.test_data[idx]+').toString("binary")';  # binary encoding here is important for bits >= 128
-            # float/uint16_t/int16_t/int8_t/double array is aparently simple enough without Buffer wrapper
+            # float/uint16_t/int16_t/int8_t/double array is apparently simple enough without Buffer wrapper
             elif _isarray and ( (fieldtype == 'float') or (fieldtype == 'uint16_t') or (fieldtype == 'int16_t') or (fieldtype == 'double') or ( fieldtype == 'int32_t' ) or ( fieldtype == 'uint32_t' ) ):
                 tdata = m.test_data[idx];
             # array of other things
